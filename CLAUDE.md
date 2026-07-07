@@ -39,7 +39,7 @@ Key decisions (settled — do not re-litigate without asking):
 
 ## v1 scope
 
-- **MCP SDK**: use the official `ModelContextProtocol` / `ModelContextProtocol.AspNetCore` NuGet packages for the Streamable HTTP transport — don't hand-roll JSON-RPC framing.
+- **MCP SDK**: use the official `ModelContextProtocol` / `ModelContextProtocol.AspNetCore` NuGet packages for the Streamable HTTP transport — don't hand-roll JSON-RPC framing. Currently pinned to `2.0.0-preview.1` (installed with `--prerelease`, no stable release exists yet) — expect breaking API changes on upgrade, re-verify the `AddMcpServer()/WithHttpTransport()/WithTools<T>()/MapMcp()` pattern in `Program.cs` against the changelog before bumping.
 - **Tools exposed**: `chat` (proxies `/v1/chat/completions`) and `list_models` (proxies `/v1/models`). Nothing else until a real need shows up.
   - `chat` input: an OpenAI-style `messages` array (`role`/`content`), not a single flattened prompt string — needed for system prompts and multi-turn.
   - `chat` generation params (`temperature`, `max_tokens`, `top_p`, ...) are optional passthrough fields; if omitted, the backend's own defaults apply. No fixed values imposed server-side.
