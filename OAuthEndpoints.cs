@@ -109,6 +109,14 @@ public static class OAuthEndpoints
         descriptor.Permissions.Add(Permissions.ResponseTypes.Code);
         descriptor.Requirements.Add(Requirements.Features.ProofKeyForCodeExchange);
 
+        // MCP clients send a `resource` indicator (RFC 8707) matching this
+        // server's own base URL. DisableResourceValidation() (Program.cs)
+        // only lifts the server-wide "is this resource known at all" check;
+        // OpenIddict still requires each application to be explicitly
+        // permitted to request a given resource, hence this per-client grant.
+        var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}/";
+        descriptor.Permissions.Add(Permissions.Prefixes.Resource + baseUrl);
+
         await applications.CreateAsync(descriptor);
 
         return Results.Json(new

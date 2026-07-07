@@ -54,6 +54,16 @@ builder.Services
             .RequireProofKeyForCodeExchange()
             .AllowRefreshTokenFlow();
 
+        // MCP clients send a `resource` indicator (RFC 8707) naming this
+        // server's own tunnel URL. OpenIddict rejects any resource that
+        // isn't pre-registered via RegisterResources(), but we can't
+        // pre-register one: the quick tunnel's URL is only known once
+        // cloudflared assigns it, after this process has already started.
+        // Safe to disable here since there's exactly one resource (this
+        // server) -- the confused-deputy scenario resource indicators
+        // guard against needs multiple distinct resources to matter.
+        options.DisableResourceValidation();
+
         options
             .AddSigningKey(signingKey)
             .AddEncryptionKey(signingKey);
