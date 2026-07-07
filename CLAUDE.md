@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, self-contained publish, `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together, and a full OAuth 2.1 authorization server (see below) — both the static-bearer-token path and the OAuth authorization-code+PKCE path were verified end-to-end via curl, including token persistence across a server restart. See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
+v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, self-contained publish, `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together, and a full OAuth 2.1 authorization server (see below). Both the static-bearer-token path and the OAuth authorization-code+PKCE path were verified via curl (including token persistence across a server restart) *and* the OAuth path was confirmed working with a real claude.ai custom connector end-to-end (register → consent → tool calls). See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
 
 ## OAuth (added mid-v1, not originally planned)
 
