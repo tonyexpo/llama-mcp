@@ -10,6 +10,10 @@ Pre-implementation. The repo currently contains only a LICENSE file — no code,
 
 An MCP server that lets a remote MCP client (Claude Desktop, Claude Code, etc.) talk to a local LLM inference server — llama.cpp (`llama-server`) or LM Studio's OpenAI-compatible API — running on a workstation, **without exposing a public port** on that workstation.
 
+## Why this exists (goal, use to judge scope)
+
+For someone who already pays for a Claude subscription, wiring in local agents only makes sense if it actually saves Claude tokens: offload basic, repetitive, or delegable work (extraction, classification, simple drafts, document/image analysis, etc.) to smaller/cheaper/custom models running on your own hardware, instead of spending Sonnet/Opus tokens on it. If a task doesn't fit that bar — it needs real reasoning, or delegating it costs more setup than it saves — there's no reason not to just stay on Sonnet directly. Use this as the filter for any new tool or feature: does it let you delegate real, repeatable work away from paid tokens, or is it a nice-to-have that doesn't move that needle.
+
 ## Architecture
 
 ```
@@ -23,6 +27,32 @@ Key decisions (settled — do not re-litigate without asking):
 - **Transport**: MCP over HTTP/SSE (required for remote clients, as opposed to stdio which only works for local same-machine clients).
 - **Auth**: the MCP server owns authentication directly via an API key / bearer token validated per request. Auth is not delegated to the tunnel layer.
 - **Backend target**: the OpenAI-compatible chat/completions API, since both `llama-server` and LM Studio expose it — the MCP server should not need backend-specific code paths for the two.
+
+## v1 scope
+
+- **MCP SDK**: use the official `ModelContextProtocol` / `ModelContextProtocol.AspNetCore` NuGet packages for the Streamable HTTP transport — don't hand-roll JSON-RPC framing.
+- **Tools exposed**: `chat` (proxies `/v1/chat/completions`) and `list_models` (proxies `/v1/models`). Nothing else until a real need shows up.
+  - `chat` input: an OpenAI-style `messages` array (`role`/`content`), not a single flattened prompt string — needed for system prompts and multi-turn.
+  - `chat` generation params (`temperature`, `max_tokens`, `top_p`, ...) are optional passthrough fields; if omitted, the backend's own defaults apply. No fixed values imposed server-side.
+  - `chat`'s `model` field is optional; if omitted, falls back to a default model name from server config (consistent with the single fixed backend for v1).
+- **Streaming**: none. `chat` returns the full completion in one response. The MCP host consumes tool results as a whole anyway, so token-by-token streaming buys nothing here — revisit only if generation length starts hitting client timeouts.
+- **HTTP client to the backend**: plain `HttpClient` + `System.Text.Json` over minimal DTOs. Not the OpenAI SDK — too much for two endpoints.
+- **Process model**: runs as a plain foreground process for now (`dotnet run` / manual start). No systemd/Windows service packaging until this is more than a dev setup.
+- **Backends**: exactly one fixed backend base URL from config. No multi-workstation/multi-model routing until a real need shows up.
+- **Cloudflare Tunnel**: quick tunnel (`cloudflared tunnel --url http://localhost:PORT`) for v1 — no Cloudflare account or domain required, one command, ephemeral `trycloudflare.com` URL. Named tunnel (stable hostname) is a later upgrade, and it has a hard prerequisite a script can't remove: the user must already have a domain on Cloudflare-managed DNS.
+
+## Deferred to v1.1+ (not decided, not started)
+
+Explicitly out of scope for v1, kept here so they aren't forgotten or re-debated from scratch:
+
+- **Streaming** chat responses (token-by-token), if generation length ever hits client timeouts.
+- **systemd / Windows service** packaging, once this is more than a dev setup.
+- **Multi-backend / multi-model routing** (more than one workstation or model to pick from).
+- **Named Cloudflare Tunnel** (stable hostname), once a user has a domain on Cloudflare DNS.
+- **`embeddings` tool** (proxy `/v1/embeddings`), if a RAG-style use case shows up.
+- **`load_model` / `unload_model` tools**, if backend model switching becomes a real need — note this would likely reintroduce backend-specific code paths (LM Studio vs `llama-server` differ here).
+- **Dedicated `health`/`status` tool** — currently skipped since a failed `chat` call already surfaces backend-unreachable errors, but flagged as a likely v1.1 addition (cheap, useful for diagnosing "backend down" vs "bad request" before spending a call).
+- **Multimodal input** (image/document analysis via vision-capable local models, e.g. Qwen-VL) — `chat` would need to accept image content parts in `messages`, not just text. Directly serves the "why this exists" goal above: document/image analysis is exactly the kind of repeatable task worth offloading from paid tokens.
 
 ## Stack priority
 
