@@ -40,6 +40,8 @@ Key decisions (settled — do not re-litigate without asking):
 - **Process model**: runs as a plain foreground process for now (`dotnet run` / manual start). No systemd/Windows service packaging until this is more than a dev setup.
 - **Backends**: exactly one fixed backend base URL from config. No multi-workstation/multi-model routing until a real need shows up.
 - **Cloudflare Tunnel**: quick tunnel (`cloudflared tunnel --url http://localhost:PORT`) for v1 — no Cloudflare account or domain required, one command, ephemeral `trycloudflare.com` URL. Named tunnel (stable hostname) is a later upgrade, and it has a hard prerequisite a script can't remove: the user must already have a domain on Cloudflare-managed DNS.
+- **Distribution**: self-contained single-file publish per OS (`dotnet publish -r linux-x64|win-x64 --self-contained -p:PublishSingleFile=true`) — the user runs one binary, no separate .NET runtime install required.
+- **Launcher scripts**: `start.sh` (Linux/macOS) and `start.bat`/`start.ps1` (Windows), each starting `cloudflared` quick tunnel + the MCP server together and printing the resulting URL and bearer token to paste into the MCP client config. Goal: one command/double-click to go from nothing running to a pastable connection.
 
 ## Deferred to v1.1+ (not decided, not started)
 
