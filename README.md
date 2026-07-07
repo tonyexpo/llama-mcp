@@ -2,7 +2,7 @@
 
 MCP server per parlare con un'istanza locale di **llama.cpp** (`llama-server`) o **LM Studio** in esecuzione su una workstation, raggiungibile in remoto in modo sicuro **senza aprire porte pubbliche**.
 
-> **Stato**: v1 completo e verificato end-to-end (server, script di avvio, publish self-contained, quick tunnel) con LM Studio reale. Vedi [`CLAUDE.md`](./CLAUDE.md) per tutte le decisioni architetturali.
+> **Stato**: v1 completo e verificato end-to-end (server, script di avvio, publish self-contained, quick tunnel, OAuth) con LM Studio reale. Vedi [`CLAUDE.md`](./CLAUDE.md) per tutte le decisioni architetturali.
 
 ## A cosa serve
 
@@ -16,7 +16,7 @@ MCP client (remoto)  --HTTP/SSE via tunnel-->  Cloudflare Tunnel  -->  MCP serve
 
 - Il server MCP gira **sulla stessa workstation** di llama.cpp/LM Studio e li raggiunge via `localhost`.
 - L'accesso da remoto passa da un **Cloudflare quick tunnel**: nessuna porta pubblica, nessun DNS dinamico da configurare, nessun account Cloudflare richiesto.
-- Autenticazione via **API key / bearer token** gestita direttamente dal server MCP.
+- Autenticazione via **API key / bearer token** (Claude Code, script/CLI) oppure via **OAuth 2.1** con PKCE (claude.ai, ChatGPT — i client web richiedono OAuth, un header statico non basta). Entrambe gestite direttamente dal server MCP, nessuna delega al tunnel.
 - Target: l'API **OpenAI-compatible** esposta sia da `llama-server` che da LM Studio.
 
 ## Tool MCP esposti (v1)
@@ -86,6 +86,15 @@ claude mcp add --transport http llama-mcp https://xxxx.trycloudflare.com/ --head
   }
 }
 ```
+
+**claude.ai / ChatGPT (web)** — questi richiedono OAuth, non accettano un header statico:
+
+1. Impostazioni → Connettori → "Aggiungi connettore personalizzato" → incolla l'URL (`https://xxxx.trycloudflare.com/`).
+2. Il client scopre da solo gli endpoint OAuth e si registra automaticamente (dynamic client registration) — se invece ti chiede un "Client ID" a mano, la registrazione automatica non è scattata; verifica che l'URL sia esattamente quello stampato dallo script.
+3. Si apre una schermata di consenso del server: inserisci lì lo stesso bearer token stampato da `start.sh`/`start.ps1` (fa da password di approvazione, non viene mai condiviso col client web).
+4. Fatto — il client web ora tiene un proprio access/refresh token, distinto dal bearer token master.
+
+Lo stato OAuth (client registrati, token emessi, chiave di firma) è salvato in `~/.config/llama-mcp/` (`%APPDATA%\llama-mcp\` su Windows) e sopravvive ai riavvii del server — non serve ri-autorizzare ogni client ad ogni riavvio.
 
 ## Sviluppo locale (senza tunnel)
 

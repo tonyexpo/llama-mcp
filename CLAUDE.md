@@ -4,7 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, bearer-token auth, self-contained publish, and `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together (confirmed a real remote request round-tripped through the `trycloudflare.com` URL into LM Studio). See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
+v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, self-contained publish, `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together, and a full OAuth 2.1 authorization server (see below) — both the static-bearer-token path and the OAuth authorization-code+PKCE path were verified end-to-end via curl, including token persistence across a server restart. See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
+
+## OAuth (added mid-v1, not originally planned)
+
+Both claude.ai's and ChatGPT's web "custom connector" flows turned out to require a real OAuth 2.1 dance (discovery, dynamic client registration, authorization code + PKCE) — a static bearer token in a header, which is all Claude Code CLI needs, isn't accepted by either web client. Since "usable from web clients" was the actual original goal, this pulled OAuth into v1 scope rather than deferring it.
+
+- **Library**: `OpenIddict` (`OpenIddict.AspNetCore` + `OpenIddict.EntityFrameworkCore`), not hand-rolled — this is security-critical protocol code (PKCE validation, token issuance/expiry, redirect URI validation), exactly where you reach for a mature dependency instead of writing it yourself.
+- **Dynamic client registration is hand-rolled**: OpenIddict 7.5.0 has no built-in RFC 7591 endpoint (verified by inspecting the shipped assembly — no `SetClientRegistrationEndpointUris` or similar exists). `OAuthEndpoints.cs`'s `POST /register` is a minimal subset (accepts `redirect_uris` + `client_name`, creates a public PKCE-required OpenIddict application, returns `client_id`) — not a full RFC 7591 implementation (no client update/delete, no auth on the registration endpoint itself since there's no secret to gate it with).
+- **Storage**: SQLite (not JSON) at `~/.config/llama-mcp/oauth.db` (via `Environment.SpecialFolder.ApplicationData`, resolves cross-platform to `~/.config` on Linux/macOS and `%APPDATA%` on Windows) — chosen over hand-rolling JSON persistence for OpenIddict's application/authorization/token stores because that would mean reimplementing several elaborate store interfaces ourselves on a security-sensitive path; SQLite is a single local file, not a "lock-in" dependency, EF Core's provider is already battle-tested. Schema created via `Database.EnsureCreatedAsync()`, not EF migrations — no need for a `Migrations/` folder on a single-tenant local tool.
+- **Signing/encryption keys**: a persisted RSA key at `~/.config/llama-mcp/signing.key` (`AppData.LoadOrCreateSigningKey()`), not OpenIddict's `AddDevelopmentEncryptionCertificate()` helpers — those lean on OS certificate stores, which behave inconsistently across Linux/Windows. A plain persisted RSA key file works identically on both and is why tokens survive a server restart instead of every restart invalidating every issued token.
+- **"Consent screen" is not a real login system**: `GET/POST /connect/authorize` renders a bare HTML form asking for the *same* static bearer token from `AuthOptions` as the approval credential. There's exactly one owner of this server, so a full user/password/session system would be pure overhead — the real security boundary is still "do you know the token," same as before OAuth existed here.
+- **Dual auth on the MCP endpoint**: the middleware in `Program.cs` accepts *either* the static bearer token (unchanged path, keeps Claude Code CLI/`claude mcp add --header` working exactly as before) *or* a valid OpenIddict-issued access token (`OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme`). `/connect/*`, `/register`, and both `/.well-known/*` paths are always public (listed explicitly in `publicPaths`) — they must be reachable without a token for the dance to bootstrap at all.
+- **`DisableTransportSecurityRequirement()` is required, not optional**: OpenIddict defaults to rejecting non-HTTPS requests. In our real topology, TLS *always* terminates at the Cloudflare tunnel — this process's own Kestrel listener only ever sees plain HTTP, even for genuine remote/HTTPS traffic (the quick tunnel forwards to `http://localhost:PORT`). Standard for anything behind a reverse proxy; don't remove this thinking it's a leftover dev shortcut.
+- **Protected Resource Metadata** (`GET /.well-known/oauth-protected-resource`, RFC 9728) and the `WWW-Authenticate: Bearer resource_metadata="..."` header on 401s are what let an MCP client discover the auth server automatically instead of requiring the user to paste a client ID manually.
 
 ## Running locally (dev, no tunnel)
 
@@ -13,7 +26,7 @@ dotnet build
 Auth__BearerToken=<token> dotnet run
 ```
 
-`Auth:BearerToken` has no default and fails startup validation if unset (`ValidateOnStart`) — set it via the `Auth__BearerToken` env var, not `appsettings.json` (that file is tracked in git, don't put a real token in it). `Backend:BaseUrl` defaults to `http://localhost:1234` (LM Studio's default). Point an MCP client at `http://localhost:5181/` (or whatever `--urls` you pass) with header `Authorization: Bearer <token>`.
+`Auth:BearerToken` has no default and fails startup validation if unset (`ValidateOnStart`) — set it via the `Auth__BearerToken` env var, not `appsettings.json` (that file is tracked in git, don't put a real token in it). `Backend:BaseUrl` defaults to `http://localhost:1234` (LM Studio's default). Point an MCP client at `http://localhost:5181/` (or whatever `--urls` you pass) with header `Authorization: Bearer <token>` — or drive the OAuth dance (`POST /register` → `GET/POST /connect/authorize` with the same token → `POST /connect/token`) if you're testing the web-client path. OAuth state lives in `~/.config/llama-mcp/` (`oauth.db` + `signing.key`) — delete both to reset to a clean slate.
 
 For the full run (publish + tunnel), use `start.sh`/`start.ps1` — see README.md.
 
@@ -36,7 +49,7 @@ Key decisions (settled — do not re-litigate without asking):
 - **Topology**: the MCP server runs *on the same workstation* as llama.cpp/LM Studio, talking to it over `localhost`. Remote MCP clients reach the MCP server through the tunnel, not the other way around.
 - **Tunnel**: Cloudflare Tunnel (`cloudflared`) is the default ingress. No public port is opened on the workstation; no dynamic DNS setup is needed for users.
 - **Transport**: MCP over HTTP/SSE (required for remote clients, as opposed to stdio which only works for local same-machine clients).
-- **Auth**: the MCP server owns authentication directly via an API key / bearer token validated per request. Auth is not delegated to the tunnel layer.
+- **Auth**: the MCP server owns authentication directly, not delegated to the tunnel layer. Two accepted credentials on the MCP endpoint: the static API key / bearer token (original design, still what Claude Code CLI uses), or an OpenIddict-issued OAuth access token (added mid-v1 once web clients turned out to require it — see "OAuth" section below).
 - **Backend target**: the OpenAI-compatible chat/completions API, since both `llama-server` and LM Studio expose it — the MCP server should not need backend-specific code paths for the two.
 
 ## v1 scope
