@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Pre-implementation. The repo currently contains only a LICENSE file — no code, build system, or tests exist yet. This file describes the agreed architecture/direction so implementation can start from a shared design. Update this file as soon as real structure (build tooling, source layout, tests) lands — do not let it drift from what actually exists.
+v1 scaffold implemented and verified end-to-end against a real LM Studio instance (both `chat` and `list_models`). Not yet done: launcher scripts (`start.sh`/`start.bat`/`start.ps1`), self-contained publish, Cloudflare quick tunnel wiring.
+
+## Running locally
+
+```
+dotnet build
+Auth__BearerToken=<token> dotnet run
+```
+
+`Auth:BearerToken` has no default and fails startup validation if unset (`ValidateOnStart`) — set it via the `Auth__BearerToken` env var, not `appsettings.json` (that file is tracked in git, don't put a real token in it). `Backend:BaseUrl` defaults to `http://localhost:1234` (LM Studio's default). Point an MCP client at `http://localhost:5181/` (or whatever `--urls` you pass) with header `Authorization: Bearer <token>`.
 
 ## What this is
 

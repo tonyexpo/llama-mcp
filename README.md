@@ -2,7 +2,7 @@
 
 MCP server per parlare con un'istanza locale di **llama.cpp** (`llama-server`) o **LM Studio** in esecuzione su una workstation, raggiungibile in remoto in modo sicuro **senza aprire porte pubbliche**.
 
-> **Stato**: in fase di design, nessun codice ancora. Vedi [`CLAUDE.md`](./CLAUDE.md) per tutte le decisioni architetturali.
+> **Stato**: scaffold v1 implementato e verificato end-to-end con LM Studio reale. Mancano ancora: script di avvio, publish self-contained, tunnel Cloudflare. Vedi [`CLAUDE.md`](./CLAUDE.md) per tutte le decisioni architetturali.
 
 ## A cosa serve
 
@@ -24,13 +24,21 @@ MCP client (remoto)  --HTTP/SSE via tunnel-->  Cloudflare Tunnel  -->  MCP serve
 - **`chat`** — proxy verso `/v1/chat/completions`. Accetta un `messages` array stile OpenAI (system/user/assistant), parametri di generazione opzionali (`temperature`, `max_tokens`, `top_p`, ...) passati al backend, e un `model` opzionale (default configurato lato server). Nessuno streaming: risposta completa in un'unica chiamata.
 - **`list_models`** — proxy verso `/v1/models`, elenca i modelli disponibili sul backend.
 
-## Uso previsto (una volta implementato)
+## Uso oggi (locale, senza tunnel)
+
+```
+Auth__BearerToken=<un-token-a-scelta> dotnet run
+```
+
+Il server ascolta su `http://localhost:5181/`. Ogni richiesta MCP deve avere l'header `Authorization: Bearer <token>` (senza, risponde 401). `Backend:BaseUrl` di default è `http://localhost:1234` (porta di default di LM Studio).
+
+## Uso previsto (una volta completato)
 
 1. Avvia `llama-server` o LM Studio sulla workstation.
 2. Lancia lo script di avvio (`start.sh` su Linux/macOS, `start.bat`/`start.ps1` su Windows): avvia insieme il Cloudflare quick tunnel e il server MCP, e stampa a schermo l'URL pubblico e il bearer token da usare.
 3. Incolla URL e token nella configurazione del client MCP (Claude Desktop/Code) da un'altra macchina.
 
-Nessun'installazione del runtime .NET richiesta: il binario è pubblicato self-contained per Linux e Windows.
+Nessun'installazione del runtime .NET richiesta: il binario sarà pubblicato self-contained per Linux e Windows.
 
 ## Stack
 
