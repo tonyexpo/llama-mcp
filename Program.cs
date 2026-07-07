@@ -1,8 +1,12 @@
 using LlamaMcp;
+using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using OpenIddict.Server;
 using OpenIddict.Validation.AspNetCore;
+using static OpenIddict.Server.OpenIddictServerEvents;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -62,6 +66,20 @@ builder.Services
             // process's own Kestrel listener -- it only ever sees plain HTTP,
             // even for real remote/HTTPS traffic. Standard for reverse-proxy setups.
             .DisableTransportSecurityRequirement();
+
+        // OpenIddict doesn't know about our hand-rolled /register endpoint
+        // (RFC 7591), so it never advertises it -- without this, clients that
+        // support dynamic client registration (e.g. claude.ai) can't find it
+        // and fall back to asking the user for a manually-entered client ID.
+        options.AddEventHandler<HandleConfigurationRequestContext>(builder =>
+            builder.UseInlineHandler(context =>
+            {
+                var request = context.Transaction.GetHttpRequest()
+                    ?? throw new InvalidOperationException("The ASP.NET Core request cannot be retrieved.");
+
+                context.Metadata["registration_endpoint"] = $"{request.Scheme}://{request.Host}/register";
+                return default;
+            }));
     })
     .AddValidation(options =>
     {
@@ -70,6 +88,31 @@ builder.Services
     });
 
 var app = builder.Build();
+
+// cloudflared always forwards to this process over plain HTTP on loopback,
+// even for genuine remote HTTPS traffic -- without this, every URL we or
+// OpenIddict generate (issuer, endpoints, redirects) comes out as http://
+// instead of https://. KnownNetworks/KnownProxies are cleared because the
+// only thing that can ever reach Kestrel here is cloudflared on localhost;
+// there's no untrusted network hop where header spoofing could matter.
+var forwardedHeadersOptions = new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+};
+forwardedHeadersOptions.KnownIPNetworks.Clear();
+forwardedHeadersOptions.KnownProxies.Clear();
+app.UseForwardedHeaders(forwardedHeadersOptions);
+
+// Required for OpenIddict's own non-passthrough endpoints (e.g. the
+// discovery document at /.well-known/oauth-authorization-server) to run
+// through the pipeline at all -- OpenIddict Server registers itself as an
+// authentication scheme, and without this middleware those endpoints were
+// still answering, just without picking up the rewritten scheme/host from
+// UseForwardedHeaders above (every URL in the discovery doc came out as
+// http:// instead of https://). Not needed for our own passthrough
+// endpoints in OAuthEndpoints.cs, which run through normal minimal-API
+// routing regardless.
+app.UseAuthentication();
 
 using (var scope = app.Services.CreateScope())
 {
