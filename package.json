@@ -1,0 +1,7 @@
+{
+  "name": "llama-mcp-badges",
+  "private": true,
+  "devDependencies": {
+    "badge-maker": "^6.0.0"
+  }
+}

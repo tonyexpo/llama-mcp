@@ -83,6 +83,7 @@ Explicitly out of scope for v1, kept here so they aren't forgotten or re-debated
 - **`load_model` / `unload_model` tools**, if backend model switching becomes a real need — note this would likely reintroduce backend-specific code paths (LM Studio vs `llama-server` differ here).
 - **Dedicated `health`/`status` tool** — currently skipped since a failed `chat` call already surfaces backend-unreachable errors, but flagged as a likely v1.1 addition (cheap, useful for diagnosing "backend down" vs "bad request" before spending a call).
 - **Multimodal input** (image/document analysis via vision-capable local models, e.g. Qwen-VL) — `chat` would need to accept image content parts in `messages`, not just text. Directly serves the "why this exists" goal above: document/image analysis is exactly the kind of repeatable task worth offloading from paid tokens.
+- **Official MCP Registry publishing** — deferred, not just unstarted. `server.json` requires either a published package (`npm`/`pypi`/`nuget`/`oci`/`mcpb`) or a fixed public `remotes` URL; llama-mcp has neither (self-contained binary, no package registry; ephemeral per-user Cloudflare quick tunnel, no stable URL). Closest fit is publishing a NuGet global-tool package purely to satisfy the registry's verification requirement — revisit if that packaging is ever done for its own sake, don't build it just to unlock a registry listing.
 
 ## Stack priority
 

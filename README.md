@@ -1,5 +1,7 @@
 # llama-mcp
 
+![License](badges/license.svg) ![.NET](badges/dotnet.svg) ![MCP](badges/mcp.svg)
+
 MCP server for talking to a local **llama.cpp** (`llama-server`) or **LM Studio** instance running on a workstation, reachable remotely and securely **without opening any public port**.
 
 > **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions.
@@ -48,9 +50,20 @@ The script:
 
 The URL is ephemeral: it changes every time the script restarts.
 
-## Publishing the self-contained binary
+## Getting the self-contained binary
 
-To avoid requiring the .NET runtime on the workstation:
+Download a prebuilt release instead of building from source — extracts straight into the `publish/` layout `start.sh`/`start.ps1` expect:
+
+```bash
+# Linux
+curl -L "https://github.com/tonyexpo/llama-mcp/releases/latest/download/llama-mcp-linux-x64.tar.gz" | tar xz -C publish
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/tonyexpo/llama-mcp/releases/latest/download/llama-mcp-win-x64.zip" -OutFile llama-mcp-win-x64.zip
+Expand-Archive llama-mcp-win-x64.zip -DestinationPath publish
+```
+
+Or build it yourself, to avoid requiring the .NET runtime on the workstation:
 
 ```bash
 # Linux
@@ -107,6 +120,14 @@ The server listens on `http://localhost:5181/`. Every MCP request needs the `Aut
 ## Stack
 
 Priority: **.NET 10** → Python → Node.js.
+
+## Contributing
+
+Issues and PRs are welcome. Before opening a PR:
+
+- Check [`CLAUDE.md`](./CLAUDE.md) for the settled architectural decisions and v1 scope — it explains the *why* behind non-obvious choices (OAuth, SQLite storage, forwarded headers, ...), don't re-litigate those without a good reason.
+- Keep the "why this exists" filter in mind: a feature earns its place if it helps offload real, repeatable work from paid Claude tokens onto local models — not just because it's technically possible.
+- Small, focused PRs over large ones. Run `dotnet build` before submitting.
 
 ## License
 
