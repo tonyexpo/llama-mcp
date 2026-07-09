@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, self-contained publish, `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together, and a full OAuth 2.1 authorization server (see below). Both the static-bearer-token path and the OAuth authorization-code+PKCE path were verified via curl (including token persistence across a server restart) *and* the OAuth path was confirmed working with a real claude.ai custom connector end-to-end (register → consent → tool calls). See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
+v1 complete and verified end-to-end against a real LM Studio instance: `chat` and `list_models` tools, self-contained publish, `start.sh`/`start.ps1`+`start.bat` launching the app + a Cloudflare quick tunnel together, and a full OAuth 2.1 authorization server (see below). Both the static-bearer-token path and the OAuth authorization-code+PKCE path were verified via curl (including token persistence across a server restart) *and* the OAuth path was confirmed working with a real claude.ai custom connector end-to-end (register → consent → tool calls). v1.1 added a `health` tool and multimodal (image) input on `chat` — see below — also confirmed against a real LM Studio instance through the claude.ai connector. See README.md for user-facing usage instructions — don't duplicate them here, keep this file to the "why" and the decisions.
 
 ## OAuth (added mid-v1, not originally planned)
 
@@ -59,7 +59,7 @@ Key decisions (settled — do not re-litigate without asking):
 ## v1 scope
 
 - **MCP SDK**: use the official `ModelContextProtocol` / `ModelContextProtocol.AspNetCore` NuGet packages for the Streamable HTTP transport — don't hand-roll JSON-RPC framing. Currently pinned to `2.0.0-preview.1` (installed with `--prerelease`, no stable release exists yet) — expect breaking API changes on upgrade, re-verify the `AddMcpServer()/WithHttpTransport()/WithTools<T>()/MapMcp()` pattern in `Program.cs` against the changelog before bumping.
-- **Tools exposed**: `chat` (proxies `/v1/chat/completions`) and `list_models` (proxies `/v1/models`). Nothing else until a real need shows up.
+- **Tools exposed**: `chat` (proxies `/v1/chat/completions`), `list_models` (proxies `/v1/models`), and `health` (v1.1, see below). Nothing else until a real need shows up.
   - `chat` input: an OpenAI-style `messages` array (`role`/`content`), not a single flattened prompt string — needed for system prompts and multi-turn.
   - `chat` generation params (`temperature`, `max_tokens`, `top_p`, ...) are optional passthrough fields; if omitted, the backend's own defaults apply. No fixed values imposed server-side.
   - `chat`'s `model` field is optional; if omitted, falls back to a default model name from server config (consistent with the single fixed backend for v1).
@@ -71,6 +71,15 @@ Key decisions (settled — do not re-litigate without asking):
 - **Distribution**: self-contained single-file publish per OS (`dotnet publish -r linux-x64|win-x64 --self-contained -p:PublishSingleFile=true`) — the user runs one binary, no separate .NET runtime install required.
 - **Launcher scripts**: `start.sh` (Linux/macOS) and `start.bat`/`start.ps1` (Windows), each starting `cloudflared` quick tunnel + the MCP server together and printing the resulting URL and bearer token to paste into the MCP client config. Goal: one command/double-click to go from nothing running to a pastable connection.
 
+## v1.1: health tool + multimodal input
+
+Both shipped together, picked first from the v1.1+ backlog below because they map directly onto the project's two core use cases (see "Why this exists"): saving tokens on ordinary delegable work (`health` makes that path cheap to diagnose), and running a specialized local model like Qwen-VL for work Sonnet/Opus can't be cheaply substituted for otherwise (multimodal `chat`).
+
+- **`health` tool**: wraps the existing `list_models` call in a try/catch instead of adding a new backend endpoint call — reuses what's already there rather than growing the backend client. Returns `Reachable`, `BaseUrl`, `Models` on success or `Error` on failure, so a client can tell "backend down" from "bad request" before spending a `chat` call.
+- **Multimodal `chat`**: images travel as an optional `imageUrls` list (http(s) URLs or `data:` base64 URIs) on each `ChatMessageDto`, not as a separate tool parameter — mirrors how OpenAI's own vision API attaches images to a message's content, and rides the existing `messages` array without changing the tool's shape.
+- **Wire format**: the OpenAI-compatible API needs `content` to switch from a plain string to an array of `{type: "text"|"image_url", ...}` parts once any image is attached. `LlamaBackendClient.ChatAsync` only pays for that rebuild (via `JsonNode`) when a message actually has `ImageUrls` — the plain-text path is still the original untouched `PostAsJsonAsync(request, ct)` call, so the already-verified v1 `chat` behavior can't regress.
+- **Verified end-to-end**: both tools confirmed against a real LM Studio instance, and through the full remote path (quick tunnel + OAuth custom connector on claude.ai web) — `health` correctly reported reachability/model list, and `chat` correctly attached and got a response using an image content part, over the live tunnel URL, not just against a local mock.
+
 ## Deferred to v1.1+ (not decided, not started)
 
 Explicitly out of scope for v1, kept here so they aren't forgotten or re-debated from scratch:
@@ -81,8 +90,6 @@ Explicitly out of scope for v1, kept here so they aren't forgotten or re-debated
 - **Named Cloudflare Tunnel** (stable hostname), once a user has a domain on Cloudflare DNS.
 - **`embeddings` tool** (proxy `/v1/embeddings`), if a RAG-style use case shows up.
 - **`load_model` / `unload_model` tools**, if backend model switching becomes a real need — note this would likely reintroduce backend-specific code paths (LM Studio vs `llama-server` differ here).
-- **Dedicated `health`/`status` tool** — currently skipped since a failed `chat` call already surfaces backend-unreachable errors, but flagged as a likely v1.1 addition (cheap, useful for diagnosing "backend down" vs "bad request" before spending a call).
-- **Multimodal input** (image/document analysis via vision-capable local models, e.g. Qwen-VL) — `chat` would need to accept image content parts in `messages`, not just text. Directly serves the "why this exists" goal above: document/image analysis is exactly the kind of repeatable task worth offloading from paid tokens.
 - **Official MCP Registry publishing** — deferred, not just unstarted. `server.json` requires either a published package (`npm`/`pypi`/`nuget`/`oci`/`mcpb`) or a fixed public `remotes` URL; llama-mcp has neither (self-contained binary, no package registry; ephemeral per-user Cloudflare quick tunnel, no stable URL). Closest fit is publishing a NuGet global-tool package purely to satisfy the registry's verification requirement — revisit if that packaging is ever done for its own sake, don't build it just to unlock a registry listing.
 
 ## Stack priority

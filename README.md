@@ -4,7 +4,7 @@
 
 MCP server for talking to a local **llama.cpp** (`llama-server`) or **LM Studio** instance running on a workstation, reachable remotely and securely **without opening any public port**.
 
-> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions.
+> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. v1.1 (`health` tool, multimodal image input) verified the same way. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions.
 
 ## What this is for
 
@@ -23,8 +23,9 @@ MCP client (remote)  --HTTP/SSE via tunnel-->  Cloudflare Tunnel  -->  MCP serve
 
 ## MCP tools exposed (v1)
 
-- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call.
+- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call. Any message can attach `imageUrls` (http(s) URLs or `data:` base64 URIs) for vision-capable models (e.g. Qwen-VL).
 - **`list_models`** — proxies `/v1/models`, lists the models available on the backend.
+- **`health`** — checks whether the backend is reachable (without spending a generation call) and reports the configured base URL and available models, or the error if it's down.
 
 ## Prerequisites
 

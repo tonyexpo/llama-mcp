@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json.Serialization;
 
 namespace LlamaMcp;
@@ -11,6 +12,11 @@ public sealed class ChatMessageDto
 
     [JsonPropertyName("content")]
     public string Content { get; set; } = "";
+
+    [JsonPropertyName("imageUrls")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [Description("Images to attach to this message, for vision-capable models (e.g. Qwen-VL). Each entry is either an http(s) URL or a data: URI (data:image/png;base64,...).")]
+    public List<string>? ImageUrls { get; set; }
 }
 
 public sealed class ChatCompletionRequestDto
