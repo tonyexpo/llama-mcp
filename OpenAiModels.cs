@@ -38,6 +38,20 @@ public sealed class ChatCompletionRequestDto
     [JsonPropertyName("top_p")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? TopP { get; set; }
+
+    [JsonPropertyName("chat_template_kwargs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ChatTemplateKwargsDto? ChatTemplateKwargs { get; set; }
+}
+
+// Passthrough for backend-specific chat-template options (e.g. Qwen3.x's
+// reasoning toggle). Only enable_thinking is exposed for now -- extend here
+// if another concrete kwarg need shows up, not preemptively.
+public sealed class ChatTemplateKwargsDto
+{
+    [JsonPropertyName("enable_thinking")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EnableThinking { get; set; }
 }
 
 public sealed class ChatCompletionResponseDto

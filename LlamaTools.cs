@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace LlamaMcp;
@@ -13,6 +14,8 @@ public sealed class LlamaTools(LlamaBackendClient backend)
         [Description("Sampling temperature. Omit to use the backend default.")] double? temperature = null,
         [Description("Maximum tokens to generate. Omit to use the backend default.")] int? maxTokens = null,
         [Description("Nucleus sampling top-p. Omit to use the backend default.")] double? topP = null,
+        [Description("Disable the model's internal reasoning/\"thinking\" step before its final answer (maps to chat_template_kwargs.enable_thinking on backends that support it, e.g. Qwen3.x). Omit to use the model's own default -- reasoning has a real hidden token cost, so turn it off for simple tasks like a straight translation and leave it on for tasks that benefit from it.")] bool? enableThinking = null,
+        IProgress<ProgressNotificationValue>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var request = new ChatCompletionRequestDto
@@ -22,9 +25,25 @@ public sealed class LlamaTools(LlamaBackendClient backend)
             Temperature = temperature,
             MaxTokens = maxTokens,
             TopP = topP,
+            ChatTemplateKwargs = enableThinking is null ? null : new ChatTemplateKwargsDto { EnableThinking = enableThinking },
         };
 
-        var response = await backend.ChatAsync(request, cancellationToken);
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeatTask = ReportHeartbeatAsync(progress, heartbeatCts.Token);
+
+        ChatCompletionResponseDto response;
+        try
+        {
+            response = await backend.ChatAsync(request, cancellationToken);
+        }
+        finally
+        {
+            // Stop the heartbeat as soon as the real call finishes (success or
+            // failure) rather than waiting for its next 15s tick.
+            heartbeatCts.Cancel();
+            await heartbeatTask;
+        }
+
         var choice = response.Choices.FirstOrDefault();
 
         return new ChatToolResult
@@ -33,6 +52,33 @@ public sealed class LlamaTools(LlamaBackendClient backend)
             Model = response.Model ?? request.Model,
             FinishReason = choice?.FinishReason,
         };
+    }
+
+    // Mitigates perceived dead-air on a single long-running chat call. Safe
+    // no-op when the caller didn't supply a progress token (the SDK binds a
+    // NullProgress instance in that case) -- does not prevent a client-side
+    // hard timeout, which MCP progress notifications aren't guaranteed to do.
+    private static async Task ReportHeartbeatAsync(IProgress<ProgressNotificationValue>? progress, CancellationToken ct)
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var elapsedSeconds = 0;
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), ct);
+                elapsedSeconds += 15;
+                progress.Report(new ProgressNotificationValue { Progress = elapsedSeconds, Message = $"Still generating... ({elapsedSeconds}s elapsed)" });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected once the chat call completes.
+        }
     }
 
     [McpServerTool(Name = "list_models"), Description("List the models currently available on the local llama.cpp/LM Studio backend.")]

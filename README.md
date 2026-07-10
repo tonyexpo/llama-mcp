@@ -4,7 +4,7 @@
 
 MCP server for talking to a local **llama.cpp** (`llama-server`) or **LM Studio** instance running on a workstation, reachable remotely and securely **without opening any public port**.
 
-> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. v1.1 (`health` tool, multimodal image input) verified the same way. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions.
+> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. v1.1 (`health` tool, multimodal image input) and v1.2 (configurable timeout, `enableThinking` control, async batch jobs, progress heartbeat) verified the same way, including a live multi-model session over claude.ai web. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions.
 
 ## What this is for
 
@@ -21,11 +21,13 @@ MCP client (remote)  --HTTP/SSE via tunnel-->  Cloudflare Tunnel  -->  MCP serve
 - Authentication via **API key / bearer token** (Claude Code, scripts/CLI) or via **OAuth 2.1** with PKCE (claude.ai, ChatGPT — web clients require OAuth, a static header isn't enough). Both are handled directly by the MCP server, no delegation to the tunnel.
 - Target: the **OpenAI-compatible** API exposed by both `llama-server` and LM Studio.
 
-## MCP tools exposed (v1)
+## MCP tools exposed
 
-- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call. Any message can attach `imageUrls` (http(s) URLs or `data:` base64 URIs) for vision-capable models (e.g. Qwen-VL).
+- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, `enableThinking`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call, with a progress heartbeat every 15s while it's in flight so a long call doesn't look dead. Any message can attach `imageUrls` (http(s) URLs or `data:` base64 URIs) for vision-capable models (e.g. Qwen-VL).
 - **`list_models`** — proxies `/v1/models`, lists the models available on the backend.
 - **`health`** — checks whether the backend is reachable (without spending a generation call) and reports the configured base URL and available models, or the error if it's down.
+- **`submit_job` / `get_job_status` / `get_job_result` / `cancel_job`** — async batch processing for work too large or slow for a single `chat` call (many documents/images, long translations). `submit_job` takes a list of items (each shaped like `chat`'s `messages`, with an optional per-item `label`) plus generation parameters shared across the batch, and returns immediately with a `jobId` — the server processes items sequentially in the background. Poll `get_job_status` for progress and `get_job_result` for output (supports pagination, fetching specific items by index, and filtering by status) whenever convenient; `jobId` isn't tied to any session, so a dropped connection or a fresh reconnect doesn't lose the job.
+  - Note: the local backend still processes one item at a time (no parallelism) — async means the caller isn't blocked waiting, not that work finishes faster.
 
 ## Prerequisites
 
@@ -116,7 +118,7 @@ OAuth state (registered clients, issued tokens, signing key) is saved in `~/.con
 Auth__BearerToken=<any-token-you-choose> dotnet run
 ```
 
-The server listens on `http://localhost:5181/`. Every MCP request needs the `Authorization: Bearer <token>` header (401 without it). `Backend:BaseUrl` defaults to `http://localhost:1234` (LM Studio's default port) — configurable in `appsettings.json` or via the `Backend__BaseUrl` env var.
+The server listens on `http://localhost:5181/`. Every MCP request needs the `Authorization: Bearer <token>` header (401 without it). `Backend:BaseUrl` defaults to `http://localhost:1234` (LM Studio's default port) and `Backend:TimeoutSeconds` defaults to `600` (local/large-model generation is often slow) — both configurable in `appsettings.json` or via `Backend__BaseUrl` / `Backend__TimeoutSeconds` env vars.
 
 ## Stack
 

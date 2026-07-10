@@ -9,6 +9,11 @@ public static class AppData
 
     public static string DbPath => Path.Combine(DataDirectory, "oauth.db");
 
+    // Separate from oauth.db on purpose: unrelated schema (OpenIddict owns
+    // oauth.db's), and CLAUDE.md documents deleting oauth.db+signing.key as
+    // the OAuth reset path -- job data must not be collateral damage of that.
+    public static string JobsDbPath => Path.Combine(DataDirectory, "jobs.db");
+
     private static string ResolveDataDirectory()
     {
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "llama-mcp");

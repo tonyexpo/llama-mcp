@@ -11,6 +11,15 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0-preview.1" />
     <PackageReference Include="OpenIddict.AspNetCore" Version="7.5.0" />
     <PackageReference Include="OpenIddict.EntityFrameworkCore" Version="7.5.0" />
+    <!-- Pins the transitive native SQLite build pulled in by
+         Microsoft.EntityFrameworkCore.Sqlite, which otherwise resolves to
+         the deprecated SQLitePCLRaw.lib.e_sqlite3 2.1.11 (CVE-2025-6965,
+         GHSA-2m69-gcr7-jv3q, fixed upstream in SQLite 3.50.2+, but the
+         2.1.x line of this package was never patched). Only lib.e_sqlite3
+         itself (the native binary carrier) got renumbered to track the
+         bundled SQLite version directly; core/provider/bundle stayed on
+         the old 2.1.x/3.0.x numbering and don't need pinning. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>
 
 </Project>

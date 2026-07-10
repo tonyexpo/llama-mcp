@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using LlamaMcp;
 using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
@@ -24,18 +25,33 @@ builder.Services.AddHttpClient<LlamaBackendClient>((sp, client) =>
 {
     var backendOptions = sp.GetRequiredService<IOptions<BackendOptions>>().Value;
     client.BaseAddress = new Uri(backendOptions.BaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(backendOptions.TimeoutSeconds);
 });
 
 builder.Services
     .AddMcpServer()
     .WithHttpTransport()
-    .WithTools<LlamaTools>();
+    .WithTools<LlamaTools>()
+    .WithTools<JobTools>();
 
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseSqlite($"Data Source={AppData.DbPath}");
     options.UseOpenIddict();
 });
+
+// Separate store from AppDbContext/oauth.db -- see AppData.JobsDbPath.
+// AddDbContextFactory (not AddDbContext): JobProcessor below is a singleton
+// BackgroundService and can't safely hold a scoped DbContext.
+builder.Services.AddDbContextFactory<JobDbContext>(options =>
+    options.UseSqlite($"Data Source={AppData.JobsDbPath}"));
+
+// Unbounded, never Complete()-d: submit_job and the startup requeue sweep
+// are both producers, JobProcessor is the sole consumer.
+var jobChannel = Channel.CreateUnbounded<Guid>();
+builder.Services.AddSingleton(jobChannel.Reader);
+builder.Services.AddSingleton(jobChannel.Writer);
+builder.Services.AddHostedService<JobProcessor>();
 
 var signingKey = AppData.LoadOrCreateSigningKey();
 
@@ -127,6 +143,14 @@ app.UseAuthentication();
 using (var scope = app.Services.CreateScope())
 {
     await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreatedAsync();
+
+    var jobDbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<JobDbContext>>();
+    await using var jobDb = await jobDbFactory.CreateDbContextAsync();
+    await jobDb.Database.EnsureCreatedAsync();
+    // JobProcessor writes results while get_job_status/get_job_result read
+    // concurrently from tool calls -- WAL avoids "database is locked" under
+    // that access pattern (oauth.db never needed this; its write volume is negligible).
+    await jobDb.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
 }
 
 var publicPaths = new HashSet<string>(StringComparer.Ordinal)
