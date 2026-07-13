@@ -45,12 +45,14 @@ public sealed class LlamaTools(LlamaBackendClient backend)
         }
 
         var choice = response.Choices.FirstOrDefault();
+        var content = choice?.Message.Content ?? "";
 
         return new ChatToolResult
         {
-            Content = choice?.Message.Content ?? "",
+            Content = content,
             Model = response.Model ?? request.Model,
             FinishReason = choice?.FinishReason,
+            IsEmpty = ContentValidation.IsEmptyContent(content),
         };
     }
 
@@ -105,6 +107,12 @@ public sealed class ChatToolResult
     public string Content { get; set; } = "";
     public string Model { get; set; } = "";
     public string? FinishReason { get; set; }
+
+    // True when Content is empty/whitespace even though the call succeeded --
+    // a backend can return finishReason:"stop" with nothing generated (see
+    // CLAUDE.md v1.3). Callers should treat this as failure regardless of
+    // FinishReason instead of checking emptiness by hand.
+    public bool IsEmpty { get; set; }
 }
 
 public sealed class HealthToolResult

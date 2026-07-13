@@ -84,19 +84,30 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
         var pending = CountOf(JobItemStatus.Pending);
         var running = CountOf(JobItemStatus.Running);
         var completed = CountOf(JobItemStatus.Completed);
+        var completedEmpty = CountOf(JobItemStatus.CompletedEmpty);
         var failed = CountOf(JobItemStatus.Failed);
         var cancelled = CountOf(JobItemStatus.Cancelled);
+
+        // Concurrency=1 means at most one Running item -- its StartedAt is
+        // enough to give the caller an elapsed-time signal to set their own
+        // cancel/alarm policy on (see CLAUDE.md v1.3). Server never auto-kills.
+        var runningStartedAt = await db.JobItems
+            .Where(i => i.JobId == jobId && i.Status == JobItemStatus.Running)
+            .Select(i => i.StartedAt)
+            .FirstOrDefaultAsync(cancellationToken);
 
         return new JobStatusResult
         {
             JobId = jobId,
-            Total = pending + running + completed + failed + cancelled,
+            Total = pending + running + completed + completedEmpty + failed + cancelled,
             Pending = pending,
             Running = running,
             Completed = completed,
+            CompletedEmpty = completedEmpty,
             Failed = failed,
             Cancelled = cancelled,
             IsComplete = pending == 0 && running == 0,
+            RunningForSeconds = runningStartedAt is null ? null : (long)(DateTime.UtcNow - runningStartedAt.Value).TotalSeconds,
         };
     }
 
@@ -134,8 +145,21 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
                 Content = i.ResultContent,
                 FinishReason = i.ResultFinishReason,
                 Error = i.Error,
+                StartedAt = i.StartedAt,
+                CompletedAt = i.CompletedAt,
             })
             .ToListAsync(cancellationToken);
+
+        // Computed post-fetch rather than in the query -- keeps the EF
+        // projection to plain column reads, no TimeSpan math for the SQLite
+        // provider to translate.
+        foreach (var item in items)
+        {
+            if (item.StartedAt is not null && item.CompletedAt is not null)
+            {
+                item.DurationSeconds = (item.CompletedAt.Value - item.StartedAt.Value).TotalSeconds;
+            }
+        }
 
         return new JobResultPage { JobId = jobId, Total = total, Offset = offset, Limit = limit, Items = items };
     }
@@ -178,9 +202,15 @@ public sealed class JobStatusResult
     public int Pending { get; set; }
     public int Running { get; set; }
     public int Completed { get; set; }
+    public int CompletedEmpty { get; set; }
     public int Failed { get; set; }
     public int Cancelled { get; set; }
     public bool IsComplete { get; set; }
+
+    // Elapsed seconds since the currently-running item started, null when
+    // nothing is running. The server never auto-cancels a slow item -- this
+    // is only a signal for the caller to set their own alarm/cancel policy.
+    public long? RunningForSeconds { get; set; }
 }
 
 public sealed class JobResultPage
@@ -200,6 +230,11 @@ public sealed class JobItemResultDto
     public string? Content { get; set; }
     public string? FinishReason { get; set; }
     public string? Error { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+
+    // Null while pending/running (no CompletedAt yet).
+    public double? DurationSeconds { get; set; }
 }
 
 public sealed class CancelJobResult

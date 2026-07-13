@@ -89,9 +89,12 @@ public sealed class JobProcessor(
 
             var response = await backend.ChatAsync(request, ct);
             var choice = response.Choices.FirstOrDefault();
+            var content = choice?.Message.Content ?? "";
 
-            item.Status = JobItemStatus.Completed;
-            item.ResultContent = choice?.Message.Content ?? "";
+            // A successful call with empty content (finishReason:"stop", not
+            // "length") is not the same as a real error -- see CLAUDE.md v1.3.
+            item.Status = ContentValidation.IsEmptyContent(content) ? JobItemStatus.CompletedEmpty : JobItemStatus.Completed;
+            item.ResultContent = content;
             item.ResultFinishReason = choice?.FinishReason;
             item.CompletedAt = DateTime.UtcNow;
         }

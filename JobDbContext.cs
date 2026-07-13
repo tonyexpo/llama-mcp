@@ -7,6 +7,12 @@ public enum JobItemStatus
     Pending,
     Running,
     Completed,
+
+    // Terminal, like Completed: the backend call succeeded but returned
+    // empty content (finishReason:"stop" with nothing generated -- see
+    // CLAUDE.md v1.3). Persisted via HasConversion<string>() below, so
+    // adding this member is additive and doesn't disturb existing rows.
+    CompletedEmpty,
     Failed,
     Cancelled,
 }
