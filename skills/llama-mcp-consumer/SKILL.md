@@ -22,6 +22,7 @@ The single most important rule: **check for empty content explicitly, don't trus
 - `chat` sets `IsEmpty: true` on its result when this happens — check it instead of hand-rolling an `IsNullOrWhiteSpace` check on `Content`.
 - Job items get a distinct terminal status, `CompletedEmpty`, instead of `Completed` — filter `get_job_result` with `statusFilter: CompletedEmpty` to find them, same as you would `Failed`.
 - Treat both the same as an error: retry, flag, or drop the item — don't count it as a successful result.
+- **v1.5**: `chat` also sets a non-null `Error` (the backend's failure message) when the backend call itself fails (e.g. a rejected image, a load failure) — check `Error` first, then `IsEmpty`, before trusting `Content`.
 
 ## 2. Sample-verify, don't full-verify
 

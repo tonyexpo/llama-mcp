@@ -31,31 +31,44 @@ public sealed class LlamaTools(LlamaBackendClient backend)
         using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var heartbeatTask = ReportHeartbeatAsync(progress, heartbeatCts.Token);
 
-        ChatCompletionResponseDto response;
         try
         {
-            response = await backend.ChatAsync(request, cancellationToken);
+            var response = await backend.ChatAsync(request, cancellationToken);
+            var choice = response.Choices.FirstOrDefault();
+            var content = choice?.Message.Content ?? "";
+
+            return new ChatToolResult
+            {
+                Content = content,
+                Model = response.Model ?? request.Model,
+                FinishReason = choice?.FinishReason,
+                IsEmpty = ContentValidation.IsEmptyContent(content),
+                PromptTokens = response.Usage?.PromptTokens,
+                CompletionTokens = response.Usage?.CompletionTokens,
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Genuine client cancel (the caller's own token fired), not a
+            // backend timeout -- let it propagate, same discrimination
+            // JobProcessor uses for its per-item cancellation token.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The MCP SDK masks a thrown exception behind a generic "An error
+            // occurred invoking 'chat'." message, discarding the detailed
+            // backend error body EnsureSuccessOrThrowAsync worked to surface
+            // (v1.4). Return it as data instead, same pattern as `health`.
+            return new ChatToolResult { Error = ex.Message, IsEmpty = true };
         }
         finally
         {
-            // Stop the heartbeat as soon as the real call finishes (success or
-            // failure) rather than waiting for its next 15s tick.
+            // Stop the heartbeat as soon as the real call finishes -- success,
+            // failure, or cancellation -- rather than waiting for its next 15s tick.
             heartbeatCts.Cancel();
             await heartbeatTask;
         }
-
-        var choice = response.Choices.FirstOrDefault();
-        var content = choice?.Message.Content ?? "";
-
-        return new ChatToolResult
-        {
-            Content = content,
-            Model = response.Model ?? request.Model,
-            FinishReason = choice?.FinishReason,
-            IsEmpty = ContentValidation.IsEmptyContent(content),
-            PromptTokens = response.Usage?.PromptTokens,
-            CompletionTokens = response.Usage?.CompletionTokens,
-        };
     }
 
     // Mitigates perceived dead-air on a single long-running chat call. Safe
@@ -121,6 +134,12 @@ public sealed class ChatToolResult
     // completion length instead of guessing (see CLAUDE.md v1.4).
     public int? PromptTokens { get; set; }
     public int? CompletionTokens { get; set; }
+
+    // Null on success. Set to the backend failure's message on error -- the
+    // MCP SDK masks a thrown exception behind a generic invocation-failed
+    // message, so a backend error is surfaced as data instead of thrown,
+    // same pattern as `health`'s Error field (see CLAUDE.md v1.5).
+    public string? Error { get; set; }
 }
 
 public sealed class HealthToolResult
