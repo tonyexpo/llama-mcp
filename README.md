@@ -4,7 +4,7 @@
 
 MCP server for talking to a local **llama.cpp** (`llama-server`) or **LM Studio** instance running on a workstation, reachable remotely and securely **without opening any public port**.
 
-> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. v1.1 (`health` tool, multimodal image input) and v1.2 (configurable timeout, `enableThinking` control, async batch jobs, progress heartbeat) verified the same way, including a live multi-model session over claude.ai web. v1.3 (empty-content detection, job timing) is implemented, unit-tested, and verified live against a local LM Studio backend (not yet over the full remote tunnel path). See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions, and [`docs/consumer-guide.md`](./docs/consumer-guide.md) for how to use these tools effectively.
+> **Status**: v1 complete and verified end-to-end (server, launcher scripts, self-contained publish, quick tunnel, OAuth) against a real LM Studio instance. v1.1 (`health` tool, multimodal image input) and v1.2 (configurable timeout, `enableThinking` control, async batch jobs, progress heartbeat) verified the same way, including a live multi-model session over claude.ai web. v1.3 (empty-content detection, job timing) is implemented, unit-tested, and verified live against a local LM Studio backend (not yet over the full remote tunnel path). v1.4 (token usage surfaced, richer backend error messages, `cancel_job` now aborts an in-flight item, `get_model_stats`, plus a security hygiene pass and the consumer guide packaged as an installable Claude skill) is implemented and unit-tested; live QA against a real LM Studio backend is pending. See [`CLAUDE.md`](./CLAUDE.md) for all the architectural decisions, and [`skills/llama-mcp-consumer/SKILL.md`](./skills/llama-mcp-consumer/SKILL.md) for how to use these tools effectively.
 
 ## What this is for
 
@@ -23,13 +23,16 @@ MCP client (remote)  --HTTP/SSE via tunnel-->  Cloudflare Tunnel  -->  MCP serve
 
 ## MCP tools exposed
 
-- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, `enableThinking`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call, with a progress heartbeat every 15s while it's in flight so a long call doesn't look dead. Any message can attach `imageUrls` (http(s) URLs or `data:` base64 URIs) for vision-capable models (e.g. Qwen-VL). The result includes `IsEmpty`: `true` when the backend returned an empty completion even on a "successful" `finishReason` — treat this as a failed call, see the consumer guide.
+- **`chat`** — proxies `/v1/chat/completions`. Accepts an OpenAI-style `messages` array (system/user/assistant), optional generation parameters (`temperature`, `max_tokens`, `top_p`, `enableThinking`, ...) passed through to the backend, and an optional `model` (server-configured default otherwise). No streaming: a full response in a single call, with a progress heartbeat every 15s while it's in flight so a long call doesn't look dead. Any message can attach `imageUrls` (http(s) URLs or `data:` base64 URIs) for vision-capable models (e.g. Qwen-VL). The result includes `IsEmpty`: `true` when the backend returned an empty completion even on a "successful" `finishReason` — treat this as a failed call, see the consumer skill. Also includes `PromptTokens`/`CompletionTokens` when the backend reports usage, so a caller can size `maxTokens` on the next call from real observed completion length instead of guessing.
 - **`list_models`** — proxies `/v1/models`, lists the models available on the backend.
 - **`health`** — checks whether the backend is reachable (without spending a generation call) and reports the configured base URL and available models, or the error if it's down.
 - **`submit_job` / `get_job_status` / `get_job_result` / `cancel_job`** — async batch processing for work too large or slow for a single `chat` call (many documents/images, long translations). `submit_job` takes a list of items (each shaped like `chat`'s `messages`, with an optional per-item `label`) plus generation parameters shared across the batch, and returns immediately with a `jobId` — the server processes items sequentially in the background. Poll `get_job_status` for progress and `get_job_result` for output (supports pagination, fetching specific items by index, and filtering by status) whenever convenient; `jobId` isn't tied to any session, so a dropped connection or a fresh reconnect doesn't lose the job.
   - Note: the local backend still processes one item at a time (no parallelism) — async means the caller isn't blocked waiting, not that work finishes faster.
-  - Item results can land in `CompletedEmpty` instead of `Completed` — same empty-content case as `chat`'s `IsEmpty`, but as a distinct terminal status so you can filter for it via `statusFilter`.
+  - Item results can land in `CompletedEmpty` instead of `Completed` — same empty-content case as `chat`'s `IsEmpty`, but as a distinct terminal status so you can filter for it via `statusFilter`. Completed items also carry `PromptTokens`/`CompletionTokens` when the backend reports them.
   - `get_job_status` reports `RunningForSeconds` (elapsed time on the currently-running item, null if nothing is running) and `get_job_result` reports each item's `StartedAt`/`CompletedAt`/`DurationSeconds` — the server never auto-cancels a slow item, so use these to set your own patience threshold and call `cancel_job` if you decide to give up on it.
+  - `cancel_job` now aborts a `Running` item's in-flight backend call, not just `Pending` ones — no more restarting the server to get unstuck from one glacially slow item. The result's `RunningItemCancellationRequested` tells you whether a running item was signalled; it lands in `Cancelled` once the abort is observed.
+  - A backend error (e.g. a non-vision model rejecting an image) now surfaces the actual response body (truncated) in the item's `Error`/the `chat` exception, instead of an opaque status code.
+- **`get_model_stats`** — an empirical per-model profile built from this server's own job history: item counts by outcome (`completed`/`completedEmpty`/`failed`/`cancelled`), average duration, and average completion tokens. Use it to pick the best-fit local model for a task from what's actually been observed on this hardware, not the model's advertised specs.
 
 ## Prerequisites
 
@@ -113,6 +116,18 @@ claude mcp add --transport http llama-mcp https://xxxx.trycloudflare.com/ --head
 4. Done — the web client now holds its own access/refresh token, separate from the master bearer token.
 
 OAuth state (registered clients, issued tokens, signing key) is saved in `~/.config/llama-mcp/` (`%APPDATA%\llama-mcp\` on Windows) and survives server restarts — no need to re-authorize every client on every restart.
+
+## Installing the consumer skill
+
+[`skills/llama-mcp-consumer/`](./skills/llama-mcp-consumer/) is a Claude skill packaging the usage lessons above (empty-content handling, `maxTokens` sizing, sample-verification, chunking, model selection via `get_model_stats`, ...) so any orchestrating Claude session picks them up automatically instead of relying on someone pasting a doc. To install it:
+
+```bash
+# copy
+cp -r skills/llama-mcp-consumer ~/.claude/skills/
+
+# or symlink, to pick up repo updates automatically
+ln -s "$(pwd)/skills/llama-mcp-consumer" ~/.claude/skills/llama-mcp-consumer
+```
 
 ## Local development (no tunnel)
 

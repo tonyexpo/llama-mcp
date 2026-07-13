@@ -16,6 +16,13 @@ namespace LlamaMcp;
 // since this server has exactly one owner.
 public static class OAuthEndpoints
 {
+    // ponytail: registration is unauthenticated by design (see class comment
+    // above) so nothing stops reconnect churn from creating a client every
+    // time a web client re-runs discovery. A real fix would purge tokenless
+    // clients left over from abandoned dances; this just bounds unbounded
+    // growth until that's worth building.
+    private const int MaxRegisteredApplications = 50;
+
     public static void MapOAuthEndpoints(this WebApplication app)
     {
         app.MapMethods("/connect/authorize", [HttpMethods.Get, HttpMethods.Post], HandleAuthorize);
@@ -35,7 +42,7 @@ public static class OAuthEndpoints
             var expectedToken = context.RequestServices
                 .GetRequiredService<IOptions<AuthOptions>>().Value.BearerToken;
 
-            if (submitted == expectedToken)
+            if (TokenComparer.TokensEqual(submitted, expectedToken))
             {
                 var identity = new ClaimsIdentity(
                     authenticationType: "llama-mcp",
@@ -83,6 +90,11 @@ public static class OAuthEndpoints
         if (!root.TryGetProperty("redirect_uris", out var redirectUrisElement) || redirectUrisElement.GetArrayLength() == 0)
         {
             return Results.BadRequest(new { error = "invalid_client_metadata", error_description = "redirect_uris is required." });
+        }
+
+        if (await applications.CountAsync(context.RequestAborted) >= MaxRegisteredApplications)
+        {
+            return Results.BadRequest(new { error = "access_denied", error_description = "registration limit reached" });
         }
 
         var redirectUris = redirectUrisElement.EnumerateArray().Select(e => e.GetString()!).ToList();

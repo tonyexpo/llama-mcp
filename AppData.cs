@@ -35,6 +35,13 @@ public static class AppData
         else
         {
             File.WriteAllText(path, Convert.ToBase64String(rsa.ExportRSAPrivateKey()));
+
+            // Default file perms (644) leave the private key world-readable.
+            // No-op/throws on Windows -- SetUnixFileMode only applies there.
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
         }
 
         return new RsaSecurityKey(rsa.ExportParameters(includePrivateParameters: true));

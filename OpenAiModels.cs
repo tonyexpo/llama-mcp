@@ -61,6 +61,23 @@ public sealed class ChatCompletionResponseDto
 
     [JsonPropertyName("choices")]
     public List<ChatChoiceDto> Choices { get; set; } = [];
+
+    [JsonPropertyName("usage")]
+    public ChatUsageDto? Usage { get; set; }
+}
+
+// The OpenAI-compatible "usage" object -- token counts the backend already
+// computes but was previously discarded on the way back to the caller.
+public sealed class ChatUsageDto
+{
+    [JsonPropertyName("prompt_tokens")]
+    public int? PromptTokens { get; set; }
+
+    [JsonPropertyName("completion_tokens")]
+    public int? CompletionTokens { get; set; }
+
+    [JsonPropertyName("total_tokens")]
+    public int? TotalTokens { get; set; }
 }
 
 public sealed class ChatChoiceDto

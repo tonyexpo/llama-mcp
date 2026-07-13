@@ -51,6 +51,7 @@ builder.Services.AddDbContextFactory<JobDbContext>(options =>
 var jobChannel = Channel.CreateUnbounded<Guid>();
 builder.Services.AddSingleton(jobChannel.Reader);
 builder.Services.AddSingleton(jobChannel.Writer);
+builder.Services.AddSingleton<JobCancellationRegistry>();
 builder.Services.AddHostedService<JobProcessor>();
 
 var signingKey = AppData.LoadOrCreateSigningKey();
@@ -151,6 +152,50 @@ using (var scope = app.Services.CreateScope())
     // concurrently from tool calls -- WAL avoids "database is locked" under
     // that access pattern (oauth.db never needed this; its write volume is negligible).
     await jobDb.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+    await PatchJobItemsColumnsAsync(jobDb);
+}
+
+// ponytail: EnsureCreatedAsync above only creates jobs.db from scratch -- it
+// never alters an existing table, so a user upgrading from a pre-v1.4 build
+// would hit "no such column" the first time PromptTokens/CompletionTokens are
+// touched. This is the deliberately lightweight alternative to a full EF
+// migrations setup for a single-user local db: check PRAGMA table_info and
+// ALTER TABLE in only the columns actually missing. Add future additive
+// JobItems columns to the list below the same way.
+static async Task PatchJobItemsColumnsAsync(JobDbContext db)
+{
+    var newColumns = new (string Name, string SqlType)[]
+    {
+        ("PromptTokens", "INTEGER"),
+        ("CompletionTokens", "INTEGER"),
+    };
+
+    await db.Database.OpenConnectionAsync();
+    var connection = db.Database.GetDbConnection();
+
+    var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    await using (var cmd = connection.CreateCommand())
+    {
+        cmd.CommandText = "PRAGMA table_info(JobItems);";
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            existing.Add(reader.GetString(reader.GetOrdinal("name")));
+        }
+    }
+
+    foreach (var (name, sqlType) in newColumns)
+    {
+        if (!existing.Contains(name))
+        {
+            // name/sqlType come from the hardcoded array above, never from
+            // caller input -- EF1002 (interpolated-SQL injection) doesn't
+            // apply, but the analyzer can't see that through a literal, so
+            // build the string first to avoid tripping it.
+            var sql = $"ALTER TABLE JobItems ADD COLUMN {name} {sqlType} NULL;";
+            await db.Database.ExecuteSqlRawAsync(sql);
+        }
+    }
 }
 
 var publicPaths = new HashSet<string>(StringComparer.Ordinal)
@@ -172,8 +217,11 @@ app.Use(async (context, next) =>
 
     var expectedToken = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value.BearerToken;
     var providedHeader = context.Request.Headers.Authorization.ToString();
+    var providedToken = providedHeader.StartsWith("Bearer ", StringComparison.Ordinal)
+        ? providedHeader["Bearer ".Length..]
+        : null;
 
-    if (providedHeader == $"Bearer {expectedToken}")
+    if (TokenComparer.TokensEqual(providedToken, expectedToken))
     {
         await next(context);
         return;

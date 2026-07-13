@@ -53,6 +53,8 @@ public sealed class LlamaTools(LlamaBackendClient backend)
             Model = response.Model ?? request.Model,
             FinishReason = choice?.FinishReason,
             IsEmpty = ContentValidation.IsEmptyContent(content),
+            PromptTokens = response.Usage?.PromptTokens,
+            CompletionTokens = response.Usage?.CompletionTokens,
         };
     }
 
@@ -113,6 +115,12 @@ public sealed class ChatToolResult
     // CLAUDE.md v1.3). Callers should treat this as failure regardless of
     // FinishReason instead of checking emptiness by hand.
     public bool IsEmpty { get; set; }
+
+    // From the backend's OpenAI-compatible "usage" object, when it sends one.
+    // Lets a caller right-size maxTokens on future calls from real observed
+    // completion length instead of guessing (see CLAUDE.md v1.4).
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
 }
 
 public sealed class HealthToolResult

@@ -7,7 +7,7 @@ using ModelContextProtocol.Server;
 namespace LlamaMcp;
 
 [McpServerToolType]
-public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelWriter<Guid> channelWriter)
+public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelWriter<Guid> channelWriter, JobCancellationRegistry cancellations)
 {
     [McpServerTool(Name = "submit_job"), Description("Submit a batch of chat items to be processed in the background against the local backend. Returns immediately with a jobId -- use get_job_status/get_job_result to check on it later instead of waiting. Use this instead of chat for large batches (many documents/images) where a single synchronous call would run too long or where the caller shouldn't stay blocked waiting.")]
     public async Task<SubmitJobResult> SubmitJob(
@@ -147,6 +147,8 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
                 Error = i.Error,
                 StartedAt = i.StartedAt,
                 CompletedAt = i.CompletedAt,
+                PromptTokens = i.PromptTokens,
+                CompletionTokens = i.CompletionTokens,
             })
             .ToListAsync(cancellationToken);
 
@@ -164,7 +166,7 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
         return new JobResultPage { JobId = jobId, Total = total, Offset = offset, Limit = limit, Items = items };
     }
 
-    [McpServerTool(Name = "cancel_job"), Description("Cancel a batch job. Items not yet started are cancelled immediately; an item already in progress is left to finish.")]
+    [McpServerTool(Name = "cancel_job"), Description("Cancel a batch job. Items not yet started are cancelled immediately; an item already in progress has its backend call aborted too.")]
     public async Task<CancelJobResult> CancelJob(
         [Description("Job ID returned by submit_job.")] Guid jobId,
         CancellationToken cancellationToken = default)
@@ -177,7 +179,89 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
                 .SetProperty(i => i.Status, JobItemStatus.Cancelled)
                 .SetProperty(i => i.CompletedAt, DateTime.UtcNow), cancellationToken);
 
-        return new CancelJobResult { JobId = jobId, CancelledCount = cancelled };
+        // Concurrency=1 -- at most one Running item for this job. Signal its
+        // per-item CancellationTokenSource via the shared registry; if it's
+        // there, JobProcessor's OperationCanceledException handler flips it
+        // to Cancelled once the backend call actually aborts.
+        var runningItemIds = await db.JobItems
+            .Where(i => i.JobId == jobId && i.Status == JobItemStatus.Running)
+            .Select(i => i.Id)
+            .ToListAsync(cancellationToken);
+
+        var runningItemCancellationRequested = false;
+        foreach (var id in runningItemIds)
+        {
+            if (cancellations.TryCancel(id))
+            {
+                runningItemCancellationRequested = true;
+            }
+        }
+
+        return new CancelJobResult
+        {
+            JobId = jobId,
+            CancelledCount = cancelled,
+            RunningItemCancellationRequested = runningItemCancellationRequested,
+        };
+    }
+
+    [McpServerTool(Name = "get_model_stats"), Description("Empirical per-model profile aggregated from this server's job history -- item counts by outcome, average duration, average completion tokens. Use this to pick the best-fit local model for a task from real observed behavior, not declared specs (a model's advertised size/capabilities don't reliably predict how it actually performs here).")]
+    public async Task<List<ModelStatsDto>> GetModelStats(CancellationToken cancellationToken = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(cancellationToken);
+
+        // ponytail: SQLite/EF can't AVG a TimeSpan and there's no clean way to
+        // get a median server-side, so pull just the columns needed for
+        // terminal items and aggregate in memory with LINQ. Fine at
+        // single-user jobs.db scale -- revisit only if history grows huge.
+        var terminalStatuses = new[]
+        {
+            JobItemStatus.Completed,
+            JobItemStatus.CompletedEmpty,
+            JobItemStatus.Failed,
+            JobItemStatus.Cancelled,
+        };
+
+        var rows = await db.JobItems
+            .Where(i => terminalStatuses.Contains(i.Status))
+            .Join(db.Jobs, i => i.JobId, j => j.Id, (i, j) => new
+            {
+                j.Model,
+                i.Status,
+                i.StartedAt,
+                i.CompletedAt,
+                i.CompletionTokens,
+            })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(r => r.Model)
+            .Select(g =>
+            {
+                var durations = g
+                    .Where(r => r.StartedAt is not null && r.CompletedAt is not null)
+                    .Select(r => (r.CompletedAt!.Value - r.StartedAt!.Value).TotalSeconds)
+                    .ToList();
+
+                var completionTokens = g
+                    .Where(r => r.CompletionTokens is not null)
+                    .Select(r => r.CompletionTokens!.Value)
+                    .ToList();
+
+                return new ModelStatsDto
+                {
+                    Model = g.Key,
+                    TotalItems = g.Count(),
+                    Completed = g.Count(r => r.Status == JobItemStatus.Completed),
+                    CompletedEmpty = g.Count(r => r.Status == JobItemStatus.CompletedEmpty),
+                    Failed = g.Count(r => r.Status == JobItemStatus.Failed),
+                    Cancelled = g.Count(r => r.Status == JobItemStatus.Cancelled),
+                    AvgDurationSeconds = durations.Count == 0 ? null : durations.Average(),
+                    AvgCompletionTokens = completionTokens.Count == 0 ? null : completionTokens.Average(),
+                };
+            })
+            .OrderByDescending(s => s.TotalItems)
+            .ToList();
     }
 }
 
@@ -235,10 +319,32 @@ public sealed class JobItemResultDto
 
     // Null while pending/running (no CompletedAt yet).
     public double? DurationSeconds { get; set; }
+
+    // From the backend's "usage" object, when present (v1.4).
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
 }
 
 public sealed class CancelJobResult
 {
     public Guid JobId { get; set; }
     public int CancelledCount { get; set; }
+
+    // True when a Running item existed and its backend call was signalled to
+    // abort. The item lands in Cancelled once JobProcessor's cancellation
+    // handler actually observes it -- not necessarily by the time this
+    // result is returned.
+    public bool RunningItemCancellationRequested { get; set; }
+}
+
+public sealed class ModelStatsDto
+{
+    public string Model { get; set; } = "";
+    public int TotalItems { get; set; }
+    public int Completed { get; set; }
+    public int CompletedEmpty { get; set; }
+    public int Failed { get; set; }
+    public int Cancelled { get; set; }
+    public double? AvgDurationSeconds { get; set; }
+    public double? AvgCompletionTokens { get; set; }
 }

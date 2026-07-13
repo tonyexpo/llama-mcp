@@ -29,7 +29,7 @@ public sealed class LlamaBackendClient(HttpClient httpClient, IOptions<BackendOp
             ? await httpClient.PostAsJsonAsync("/v1/chat/completions", BuildMultimodalPayload(request), ct)
             : await httpClient.PostAsJsonAsync("/v1/chat/completions", request, ct);
 
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessOrThrowAsync(response, ct);
 
         return await response.Content.ReadFromJsonAsync<ChatCompletionResponseDto>(ct)
             ?? throw new InvalidOperationException("Backend returned an empty chat completion response.");
@@ -64,11 +64,33 @@ public sealed class LlamaBackendClient(HttpClient httpClient, IOptions<BackendOp
     public async Task<List<string>> ListModelsAsync(CancellationToken ct)
     {
         using var response = await httpClient.GetAsync("/v1/models", ct);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessOrThrowAsync(response, ct);
 
         var result = await response.Content.ReadFromJsonAsync<ModelListResponseDto>(ct)
             ?? throw new InvalidOperationException("Backend returned an empty model list response.");
 
         return result.Data.Select(m => m.Id).ToList();
+    }
+
+    // response.EnsureSuccessStatusCode() throws with only the status code and
+    // discards the body -- on a non-success response the backend's error body
+    // (e.g. "model does not support images") is the actual useful diagnostic,
+    // and was previously lost, turning a job item's Error into an opaque
+    // "400 (Bad Request)". Truncated to keep a pathological HTML/stack-trace
+    // error body from bloating a job's Error column.
+    private static async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (body.Length > 500)
+        {
+            body = body[..500];
+        }
+
+        throw new HttpRequestException($"Backend returned {(int)response.StatusCode} {response.StatusCode}: {body}");
     }
 }

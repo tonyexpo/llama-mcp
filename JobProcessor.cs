@@ -1,8 +1,44 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 
 namespace LlamaMcp;
+
+// Singleton registry of per-item cancellation sources, keyed by JobItem.Id --
+// lets cancel_job (JobTools) abort a backend call JobProcessor is actively
+// awaiting, not just items that haven't started yet. Registered/removed
+// around the backend call in JobProcessor.ProcessItemAsync.
+public sealed class JobCancellationRegistry
+{
+    private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _tokens = new();
+
+    public void Register(Guid itemId, CancellationTokenSource cts) => _tokens[itemId] = cts;
+
+    public void Unregister(Guid itemId) => _tokens.TryRemove(itemId, out _);
+
+    public bool TryCancel(Guid itemId)
+    {
+        if (!_tokens.TryGetValue(itemId, out var cts))
+        {
+            return false;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The item finished and its finally block disposed the CTS in the
+            // window between the TryGetValue above and here -- nothing left to
+            // cancel, treat as "no running item to signal" rather than throw.
+            return false;
+        }
+
+        return true;
+    }
+}
 
 // Sequential (concurrency=1) background worker for job items -- matches
 // realistic local hardware (one GPU/model instance). Item dispatch is a
@@ -18,6 +54,7 @@ public sealed class JobProcessor(
     LlamaBackendClient backend,
     ChannelReader<Guid> channelReader,
     ChannelWriter<Guid> channelWriter,
+    JobCancellationRegistry cancellations,
     ILogger<JobProcessor> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -73,8 +110,16 @@ public sealed class JobProcessor(
         var item = await db.JobItems.FirstAsync(i => i.Id == itemId, ct);
         var job = await db.Jobs.FirstAsync(j => j.Id == item.JobId, ct);
 
+        // Per-item cancellation source, separate from stoppingToken -- lets
+        // cancel_job (JobTools, via the shared registry) abort just this
+        // item's backend call without tearing down the whole processor loop.
+        var itemCts = new CancellationTokenSource();
+        cancellations.Register(itemId, itemCts);
+
         try
         {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, itemCts.Token);
+
             var request = new ChatCompletionRequestDto
             {
                 Model = job.Model,
@@ -87,7 +132,7 @@ public sealed class JobProcessor(
                     : new ChatTemplateKwargsDto { EnableThinking = job.EnableThinking },
             };
 
-            var response = await backend.ChatAsync(request, ct);
+            var response = await backend.ChatAsync(request, linkedCts.Token);
             var choice = response.Choices.FirstOrDefault();
             var content = choice?.Message.Content ?? "";
 
@@ -96,15 +141,36 @@ public sealed class JobProcessor(
             item.Status = ContentValidation.IsEmptyContent(content) ? JobItemStatus.CompletedEmpty : JobItemStatus.Completed;
             item.ResultContent = content;
             item.ResultFinishReason = choice?.FinishReason;
+            item.PromptTokens = response.Usage?.PromptTokens;
+            item.CompletionTokens = response.Usage?.CompletionTokens;
             item.CompletedAt = DateTime.UtcNow;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                // Server shutdown, not a per-item cancel_job -- rethrow and
+                // let ExecuteAsync's loop unwind. Leave the item Running: the
+                // startup requeue sweep resets/requeues it on next launch.
+                throw;
+            }
+
+            // Only the per-item token was cancelled -- a real cancel_job.
+            item.Status = JobItemStatus.Cancelled;
+            item.CompletedAt = DateTime.UtcNow;
+        }
+        catch (Exception ex)
         {
             // One item failing must not kill the loop over the rest of the batch.
             item.Status = JobItemStatus.Failed;
             item.Error = ex.Message;
             item.CompletedAt = DateTime.UtcNow;
             logger.LogWarning(ex, "Job item {ItemId} (job {JobId}) failed", itemId, item.JobId);
+        }
+        finally
+        {
+            cancellations.Unregister(itemId);
+            itemCts.Dispose();
         }
 
         await db.SaveChangesAsync(ct);

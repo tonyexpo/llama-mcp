@@ -45,6 +45,11 @@ public sealed class JobItem
     public DateTime CreatedAt { get; set; }
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
+
+    // From the backend's "usage" object, when present (v1.4). Added via a
+    // startup ALTER TABLE patch, not EF migrations -- see Program.cs.
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
 }
 
 public sealed class JobDbContext(DbContextOptions<JobDbContext> options) : DbContext(options)
