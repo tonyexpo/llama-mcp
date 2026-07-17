@@ -227,6 +227,7 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
             .Join(db.Jobs, i => i.JobId, j => j.Id, (i, j) => new
             {
                 j.Model,
+                i.ResolvedModel,
                 i.Status,
                 i.StartedAt,
                 i.CompletedAt,
@@ -235,7 +236,7 @@ public sealed class JobTools(IDbContextFactory<JobDbContext> dbFactory, ChannelW
             .ToListAsync(cancellationToken);
 
         return rows
-            .GroupBy(r => r.Model)
+            .GroupBy(r => JobModelAttribution.EffectiveModel(r.ResolvedModel, r.Model))
             .Select(g =>
             {
                 var durations = g

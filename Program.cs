@@ -168,6 +168,7 @@ static async Task PatchJobItemsColumnsAsync(JobDbContext db)
     {
         ("PromptTokens", "INTEGER"),
         ("CompletionTokens", "INTEGER"),
+        ("ResolvedModel", "TEXT"),
     };
 
     await db.Database.OpenConnectionAsync();

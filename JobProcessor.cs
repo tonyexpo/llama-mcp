@@ -143,6 +143,7 @@ public sealed class JobProcessor(
             item.ResultFinishReason = choice?.FinishReason;
             item.PromptTokens = response.Usage?.PromptTokens;
             item.CompletionTokens = response.Usage?.CompletionTokens;
+            item.ResolvedModel = response.Model;
             item.CompletedAt = DateTime.UtcNow;
         }
         catch (OperationCanceledException)

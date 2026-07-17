@@ -50,6 +50,15 @@ public sealed class JobItem
     // startup ALTER TABLE patch, not EF migrations -- see Program.cs.
     public int? PromptTokens { get; set; }
     public int? CompletionTokens { get; set; }
+
+    // The model name the backend actually echoed back in a successful
+    // response, distinct from Job.Model (what the caller requested, often
+    // "" when omitted to use whatever LM Studio has loaded). get_model_stats
+    // groups by this when present -- grouping by Job.Model alone silently
+    // merged every omitted-model call into one "" bucket regardless of which
+    // real model answered it. Null for items that never got a response
+    // (Failed/Cancelled before completion).
+    public string? ResolvedModel { get; set; }
 }
 
 public sealed class JobDbContext(DbContextOptions<JobDbContext> options) : DbContext(options)

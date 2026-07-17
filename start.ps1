@@ -12,9 +12,26 @@ if (Test-Path $Bin) {
     $AppExe = $Bin
     $AppArgs = @("--urls", "http://localhost:$Port")
 } else {
-    Write-Warning "Published binary not found at $Bin, falling back to 'dotnet run' (dev mode)."
+    Write-Warning "Published binary not found at $Bin, falling back to a Release build (dev mode)."
+    & dotnet build $ScriptDir -c Release --nologo
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "dotnet build failed."
+        exit 1
+    }
+    # Launch the built DLL directly (dotnet <dll>) instead of 'dotnet run':
+    # Start-Process -PassThru below can't reliably track 'dotnet run's PID on
+    # Windows -- it returns a PID that stops existing once the real server is
+    # up, so Wait-Process fails and the finally block tears the tunnel down
+    # right after "MCP server ready" prints. 'dotnet <dll>' runs in the exact
+    # process Start-Process spawns, same as the published-exe branch above.
+    $Dll = Join-Path $ScriptDir "bin\Release\net10.0\LlamaMcp.dll"
     $AppExe = "dotnet"
-    $AppArgs = @("run", "--project", $ScriptDir, "-c", "Release", "--urls", "http://localhost:$Port")
+    # Start-Process -ArgumentList joins array elements with a plain space and
+    # does not quote elements that contain one -- $Dll's path breaks in two
+    # here whenever it's under a directory with a space (e.g. a Windows user
+    # profile like "C:\Users\Jane Doe\..."), passing dotnet.exe a truncated
+    # first argument. Wrap it in literal quotes so it survives as one token.
+    $AppArgs = @("`"$Dll`"", "--urls", "http://localhost:$Port")
 }
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
